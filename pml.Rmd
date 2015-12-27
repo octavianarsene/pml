@@ -1,0 +1,148 @@
+---
+title: "PML Assignment"
+output: html_document
+---
+
+## Synopsis
+
+The quantified self movement devices are able to collect a large amount of data about personal activity relatively inexpensively. The goal is to find patterns in physical behavior leading to health improvement.
+This study uses data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants (the data set is provided by http://groupware.les.inf.puc-rio.br/har). They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+The purpose of this study is to predict the manner in which they did the exercise. The classification variable is *classe* having 5 possible outcomes (A, B, C, D and E).
+
+## Data Processing
+
+### Raw Data
+
+The dataset is provided by [Groupware@LES](http://groupware.les.inf.puc-rio.br/har), aiming human activity recognition.
+The downloaded file [pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) is used in R script in order to do the analysis.
+
+### Cleaning and Preprocessing data
+
+The following preprocessing actions are considered:
+
+1. the data from accelerometers on the belt, forearm, arm, and dumbell will be extracted from the data set
+
+2. the NA based columns will be removed as well
+
+3. check for near zero variance predictors
+
+```{r, cache=TRUE, echo=FALSE}
+  library(caret)
+  library(randomForest)
+  library(rpart)
+```
+```{r, cache=TRUE}
+  #read one row of data to decide which columns are eligible
+  headcols = read.csv('pml-training.csv', nrows = 1, na.strings = c('', 'NA', 'NULL'))
+  #name based filtering
+  #remove NA based columns
+  cols = dim(headcols)[2]
+  colClass = rep('NULL', cols)
+  colClass[intersect(grep('belt|forearm|arm|dumbbell', names(headcols)), col(headcols)[!is.na(headcols)])] = 'numeric'
+  #the outcome is classe column
+  colClass[cols] = 'character'
+  #read the entire data set
+  tr = read.csv('pml-training.csv', header = TRUE, colClasses = colClass, na.strings = c('', 'NA', 'NULL'))
+  #check predictors having near zero variance
+  nzv = nearZeroVar(tr, saveMetrics = FALSE)
+```
+
+There is no near zero variance predictors, so the preprocessed data set has `r dim(tr)[1]` rows and `r dim(tr)[2]` cols.
+
+##Prediction Model
+
+The dimensions of the final data set reveal a medium size, thus the partition rule: *60% for training and 40% for validation* is considered for the current study. 
+
+```{r, cache=TRUE}
+  set.seed(12345)
+  trainidx = createDataPartition(y = tr$classe, p=0.6, list=FALSE)
+  trainds = tr[trainidx,]
+  validds = tr[-trainidx,]
+```
+
+The out of sample (generalization) error is computed  as 1 - accuracy given by the comparison between the validation data set *classe* values and the predicted ones. The expected out of sample error value should be less than 5% (the accuracy should be greater than 95%).
+
+Cross validation is the simplest and widely method for estimating out of sample error. K-fold cross validation selects K folds, meaning that the classification algorithm groups the data into K subsamples, estimating K-1 models where one model is saved as the hold out group while the remaining K-1 subsamples are used to train the model. The results are aggregated in order to create an overall estimate of the out of sample error.
+
+Bootstrap is a general tool for assessing statistical accuracy, estimating extra-sample prediction error.
+
+The outcome *classe* is a discrete variable, a categorical one. This recommends the classification tree algorithms for the prediction model fitting.
+The following cases are considered to build the prediction model: classification trees and random forests. 
+
+###Classification Trees
+
+Model fitting is using recursive partitioning method.
+
+```{r, cache=TRUE}
+  #model fitting
+  mod_ct = train(classe ~ ., method = 'rpart', data = trainds)
+  #predict new values
+  pred = predict(mod_ct, newdata = validds)
+  #evaluate the accuracy
+  cm = confusionMatrix(validds$classe, pred)
+  #show tree info
+  print(mod_ct$finalModel)
+```
+
+The tree is not large, it has just 7 levels. As a consequence, there is not need to prune or use 'early stopping' method.
+The accuracy `r cm$overall[1]` value is quite low, thus the model performs poorly. The out of sample error rate is `r 1-cm$overall[1]`.
+
+###Random Forests
+
+This method trains two models using *bootstrap* and *cross validation* as resampling methods.
+
+Tune model using resampling method *bootstrap* using 5 iterations:
+
+```{r, cache=TRUE}
+  fitCtrl = trainControl(method = "boot", number = 5, allowParallel = T, verbose = F)
+  mod_rf_b = train(classe ~ ., method = 'rf', data = trainds, trControl = fitCtrl, verbose = F)
+  #predict new values
+  pred = predict(mod_rf_b, newdata = validds)
+  #evaluate the accuracy
+  cm_rf_b = confusionMatrix(validds$classe, pred)
+```
+
+The accuracy `r cm_rf_b$overall[1]` value is higher than 90%. The out of sample error rate is `r 1-cm_rf_b$overall[1]`.
+
+```{r, cache=TRUE, fig.height=5, fig.width=5}
+  plot(mod_rf_b)
+```
+
+The random forests model with 27 predictors is selected by the best accuracy.
+
+
+Tune model using resampling method *cross validation* to select the number of the predictors. The number of folds is 5 due the computational cost. 
+
+```{r, cache=TRUE}
+  fitCtrl = trainControl(method = "cv", number = 5, allowParallel = T, verbose = F)
+  mod_rf_cv = train(classe ~ ., method = 'rf', data = trainds, trControl = fitCtrl, verbose = F)
+  #predict new values
+  pred = predict(mod_rf_cv, newdata = validds)
+  #evaluate the accuracy
+  cm = confusionMatrix(validds$classe, pred)
+```
+
+The accuracy `r cm$overall[1]` value is higher than 90%. The out of sample error rate is `r 1-cm$overall[1]`.
+
+```{r, cache=TRUE, fig.height=5, fig.width=5}
+  plot(mod_rf_cv)
+```
+
+The random forests model with 27 predictors is selected by the best accuracy.
+
+## Testing
+
+A separate data set for testing [pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) is used in R script in order to do the testing.
+
+```{r, cache=TRUE}
+  tst = read.csv('pml-testing.csv', header = TRUE, colClasses = colClass, na.strings = c('', 'NA', 'NULL'))
+  pred = predict(mod_rf_cv, newdata = tst)
+  
+  pred
+```
+
+## Conclusions
+
+Comparing all three models out of sample error the best value `r max(cm_rf_b$overall[1], cm$overall[1])` is given by random forests model. However both random forest methods give greater 99% accuracy, thus they can be used further in generalization.
+The prediction for the test data set obtains 100% accuracy using random forest model.
+
